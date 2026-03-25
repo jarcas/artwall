@@ -11,6 +11,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1345,6 +1346,11 @@ class ArtwallTrayApp:
         except (requests.RequestException, ArtwallError) as exc:
             message = f"[artwall] Error: {exc}"
             log_message(message)
+            print(message, file=sys.stderr)
+        except Exception as exc:
+            message = f"[artwall] Error inesperado: {exc.__class__.__name__}: {exc}"
+            log_message(message)
+            log_message("[artwall] Traceback inesperado:\n" + traceback.format_exc().rstrip())
             print(message, file=sys.stderr)
 
 
