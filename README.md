@@ -119,6 +119,7 @@ Default values for a new configuration:
 `cache_max_mb` defines the maximum image cache size. If the image cache exceeds this limit, artwall deletes the oldest cached images until it is under the limit.
 
 `harvard_api_key` enables the optional Harvard Art Museums source. You can also set `ARTWALL_HARVARD_API_KEY` in the environment instead of storing the key in the config file.
+Harvard candidates are checked for image downloadability before they are accepted, so network-specific `403` responses are skipped instead of being returned as usable artworks.
 
 `recent-artworks.json` stores the seen-artwork history by museum using the format `object_id -> ISO 8601 UTC timestamp`.
 

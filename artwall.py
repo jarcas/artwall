@@ -50,6 +50,7 @@ FONT_PATHS = [
 ]
 
 REQUEST_TIMEOUT = 30
+IMAGE_PROBE_TIMEOUT = 5
 MET_SEARCH_URL = "https://collectionapi.metmuseum.org/public/collection/v1/search"
 MET_OBJECT_URL = "https://collectionapi.metmuseum.org/public/collection/v1/objects/{object_id}"
 CMA_ARTWORKS_URL = "https://openaccess-api.clevelandart.org/api/artworks"
@@ -895,6 +896,22 @@ def harvard_author(item: dict[str, Any]) -> str:
     return clean_text(item.get("culture")) or "Autor desconocido"
 
 
+def is_downloadable_image_url(image_url: str) -> bool:
+    try:
+        response = requests.get(
+            image_url,
+            timeout=IMAGE_PROBE_TIMEOUT,
+            headers={"User-Agent": USER_AGENT, "Accept": "image/*,*/*;q=0.8"},
+            stream=True,
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        return False
+
+    content_type = response.headers.get("content-type", "").lower()
+    return content_type.startswith("image/")
+
+
 def choose_harvard_artwork(settings: Settings | None = None) -> Artwork:
     first_page = fetch_harvard_page(page=1, size=1, settings=settings)
     info = first_page.get("info") or {}
@@ -905,10 +922,11 @@ def choose_harvard_artwork(settings: Settings | None = None) -> Artwork:
 
     pages = {1}
     if total_pages > 1:
-        extra_count = min(5, total_pages - 1)
+        extra_count = min(12, total_pages - 1)
         while len(pages) < extra_count + 1:
             pages.add(random.randint(1, total_pages))
 
+    rejected_images = 0
     for page in random.sample(list(pages), len(pages)):
         pages_checked += 1
         payload = fetch_harvard_page(page=page, size=size, settings=settings)
@@ -921,6 +939,9 @@ def choose_harvard_artwork(settings: Settings | None = None) -> Artwork:
             object_id = item.get("objectid")
             image_url = harvard_image_url(item)
             if not isinstance(object_id, int) or not image_url:
+                continue
+            if not is_downloadable_image_url(image_url):
+                rejected_images += 1
                 continue
 
             candidates.append(
@@ -944,6 +965,7 @@ def choose_harvard_artwork(settings: Settings | None = None) -> Artwork:
                 pages_checked=pages_checked,
                 sampled_pages=len(pages),
                 page_candidates=len(candidates),
+                rejected_images=rejected_images,
                 useful=total_candidates_seen,
             )
             return random.choice(candidates)
@@ -953,9 +975,10 @@ def choose_harvard_artwork(settings: Settings | None = None) -> Artwork:
         total_pages=total_pages,
         pages_checked=pages_checked,
         sampled_pages=len(pages),
+        rejected_images=rejected_images,
         useful=total_candidates_seen,
     )
-    raise ArtwallError("No se encontro una obra valida en Harvard Art Museums.")
+    raise ArtwallError("No se encontro una obra valida y descargable en Harvard Art Museums.")
 
 
 def available_museums(settings: Settings | None = None) -> tuple[str, ...]:
