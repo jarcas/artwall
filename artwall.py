@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import html
 import json
+import os
 import random
 import re
 import subprocess
@@ -28,6 +29,7 @@ HAS_TRAY_SUPPORT = False
 APP_ID = "artwall"
 APP_NAME = "artwall"
 USER_AGENT = "artwall/0.2 (+personal KDE wallpaper rotator)"
+AIC_USER_AGENT = "artwall (local wallpaper app)"
 
 CONFIG_DIR = Path.home() / ".config" / APP_ID
 DATA_DIR = Path.home() / ".local" / "share" / APP_ID
@@ -51,25 +53,33 @@ REQUEST_TIMEOUT = 30
 MET_SEARCH_URL = "https://collectionapi.metmuseum.org/public/collection/v1/search"
 MET_OBJECT_URL = "https://collectionapi.metmuseum.org/public/collection/v1/objects/{object_id}"
 CMA_ARTWORKS_URL = "https://openaccess-api.clevelandart.org/api/artworks"
+AIC_ARTWORKS_URL = "https://api.artic.edu/api/v1/artworks"
+HARVARD_OBJECTS_URL = "https://api.harvardartmuseums.org/object"
 RIJKS_SEARCH_URL = "https://data.rijksmuseum.nl/search/collection?type=painting&imageAvailable=true"
 RESAMPLE_LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 
 MUSEUM_LABELS = {
     "met": "The Met",
     "cma": "Cleveland Museum of Art",
+    "aic": "Art Institute of Chicago",
+    "harvard": "Harvard Art Museums",
     "ngl": "National Gallery London",
     "rijks": "Rijksmuseum",
     "random": "Aleatorio entre museos",
 }
-SUPPORTED_MUSEUMS = ("met", "cma", "ngl", "rijks")
-TRAY_INTERVAL_OPTIONS = (2, 5, 15)
+SUPPORTED_MUSEUMS = ("met", "cma", "aic", "harvard", "ngl", "rijks")
+TRAY_INTERVAL_OPTIONS = (2, 5, 10)
 KDE_APPLY_RETRIES = 2
 KDE_APPLY_RETRY_DELAY_SECONDS = 3
 TRAY_STARTUP_DELAY_SECONDS = 15
-RECENT_HISTORY_SIZE = 30
 RECENT_SELECTION_ATTEMPTS = 12
 LOG_MAX_BYTES = 1_048_576
 LOG_BACKUP_COUNT = 4
+RANDOM_CYCLE_ATTEMPTS = 6
+RECENT_HISTORY_DAYS = 7
+HISTORY_RETENTION_DAYS = 60
+CACHE_MAX_BYTES = 500 * 1024 * 1024
+CACHE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 @dataclass
@@ -80,6 +90,10 @@ class Settings:
     screen_height: int = 0
     keep_rendered: int = 10
     paused: bool = False
+    avoid_repeat_days: int = RECENT_HISTORY_DAYS
+    history_retention_days: int = HISTORY_RETENTION_DAYS
+    cache_max_mb: int = CACHE_MAX_BYTES // (1024 * 1024)
+    harvard_api_key: str = ""
 
 
 @dataclass
@@ -161,6 +175,13 @@ def log_message(message: str) -> None:
         pass
 
 
+def safe_print(*args: Any, **kwargs: Any) -> None:
+    try:
+        print(*args, **kwargs)
+    except OSError:
+        pass
+
+
 def log_selection_metrics(source: str, **metrics: Any) -> None:
     parts = [f"source={source}"]
     parts.extend(f"{key}={value}" for key, value in metrics.items())
@@ -169,11 +190,9 @@ def log_selection_metrics(source: str, **metrics: Any) -> None:
 
 def normalize_source(source: str) -> str:
     source = str(source or "random").strip().lower()
-    if source == "aic":
-        return "cma"
     if source in MUSEUM_LABELS:
         return source
-        return "random"
+    return "random"
 
 
 def load_settings() -> Settings:
@@ -187,14 +206,26 @@ def load_settings() -> Settings:
     except (OSError, json.JSONDecodeError) as exc:
         raise ArtwallError(f"No se pudo leer la configuracion: {exc}") from exc
 
-    return Settings(
+    settings = Settings(
         interval_minutes=max(1, int(data.get("interval_minutes", 2))),
         source=normalize_source(data.get("source", "random")),
         screen_width=max(0, int(data.get("screen_width", 0))),
         screen_height=max(0, int(data.get("screen_height", 0))),
         keep_rendered=max(3, int(data.get("keep_rendered", 10))),
         paused=bool(data.get("paused", False)),
+        avoid_repeat_days=max(1, int(data.get("avoid_repeat_days", RECENT_HISTORY_DAYS))),
+        history_retention_days=max(1, int(data.get("history_retention_days", HISTORY_RETENTION_DAYS))),
+        cache_max_mb=max(1, int(data.get("cache_max_mb", CACHE_MAX_BYTES // (1024 * 1024)))),
+        harvard_api_key=clean_text(data.get("harvard_api_key")),
     )
+    if (
+        "avoid_repeat_days" not in data
+        or "history_retention_days" not in data
+        or "cache_max_mb" not in data
+        or "harvard_api_key" not in data
+    ):
+        save_settings(settings)
+    return settings
 
 
 def save_settings(settings: Settings) -> None:
@@ -231,11 +262,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def request_json(url: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    headers = {"User-Agent": USER_AGENT}
+    if "api.artic.edu" in url or "www.artic.edu" in url:
+        headers["AIC-User-Agent"] = AIC_USER_AGENT
     response = requests.get(
         url,
         params=params,
         timeout=REQUEST_TIMEOUT,
-        headers={"User-Agent": USER_AGENT},
+        headers=headers,
     )
     response.raise_for_status()
     return response.json()
@@ -314,33 +348,169 @@ def fetch_rijks_page_urls() -> list[str]:
     return page_urls
 
 
-def load_recent_history() -> dict[str, list[int]]:
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def parse_history_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def prune_recent_history(
+    history: dict[str, dict[str, str]],
+    *,
+    now: datetime | None = None,
+    retention_days: int = HISTORY_RETENTION_DAYS,
+) -> dict[str, dict[str, str]]:
+    current_time = now or utc_now()
+    cutoff = current_time - timedelta(days=max(1, retention_days))
+    pruned: dict[str, dict[str, str]] = {}
+
+    for source in SUPPORTED_MUSEUMS:
+        entries = history.get(source, {})
+        source_entries: dict[str, str] = {}
+        if isinstance(entries, dict):
+            for object_id, seen_at in entries.items():
+                object_id_text = str(object_id).strip()
+                if not object_id_text:
+                    continue
+                parsed_seen_at = parse_history_timestamp(seen_at)
+                if parsed_seen_at is None or parsed_seen_at < cutoff:
+                    continue
+                source_entries[object_id_text] = parsed_seen_at.isoformat()
+        pruned[source] = source_entries
+
+    return pruned
+
+
+def load_recent_history() -> dict[str, dict[str, str]]:
+    return load_recent_history_with_retention(HISTORY_RETENTION_DAYS)
+
+
+def load_recent_history_with_retention(retention_days: int) -> dict[str, dict[str, str]]:
     if not HISTORY_PATH.exists():
-        return {source: [] for source in SUPPORTED_MUSEUMS}
+        return {source: {} for source in SUPPORTED_MUSEUMS}
 
     try:
         payload = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {source: [] for source in SUPPORTED_MUSEUMS}
+        return {source: {} for source in SUPPORTED_MUSEUMS}
 
-    history: dict[str, list[int]] = {source: [] for source in SUPPORTED_MUSEUMS}
+    history: dict[str, dict[str, str]] = {source: {} for source in SUPPORTED_MUSEUMS}
+    migrated = False
+    now = utc_now().isoformat()
+
     for source in SUPPORTED_MUSEUMS:
-        entries = payload.get(source, [])
-        history[source] = [int(object_id) for object_id in entries if isinstance(object_id, int)]
-    return history
+        entries = payload.get(source, {})
+        if isinstance(entries, list):
+            migrated = True
+            history[source] = {str(object_id): now for object_id in entries if isinstance(object_id, int)}
+            continue
+        if isinstance(entries, dict):
+            source_entries: dict[str, str] = {}
+            for object_id, seen_at in entries.items():
+                object_id_text = str(object_id).strip()
+                parsed_seen_at = parse_history_timestamp(seen_at)
+                if not object_id_text or parsed_seen_at is None:
+                    migrated = True
+                    continue
+                source_entries[object_id_text] = parsed_seen_at.isoformat()
+            history[source] = source_entries
+            if source_entries != entries:
+                migrated = True
+            continue
+        if entries:
+            migrated = True
+
+    pruned_history = prune_recent_history(history, retention_days=retention_days)
+    if migrated or pruned_history != history:
+        save_recent_history(pruned_history, retention_days=retention_days)
+    return pruned_history
 
 
-def save_recent_history(history: dict[str, list[int]]) -> None:
-    payload = {source: history.get(source, []) for source in SUPPORTED_MUSEUMS}
-    HISTORY_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+def save_recent_history(
+    history: dict[str, dict[str, str]],
+    *,
+    retention_days: int = HISTORY_RETENTION_DAYS,
+) -> None:
+    payload = prune_recent_history(history, retention_days=retention_days)
+    HISTORY_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def remember_artwork(artwork: Artwork, *, limit: int = RECENT_HISTORY_SIZE) -> None:
-    history = load_recent_history()
-    source_history = [object_id for object_id in history.get(artwork.source, []) if object_id != artwork.object_id]
-    source_history.append(artwork.object_id)
-    history[artwork.source] = source_history[-max(1, limit):]
-    save_recent_history(history)
+def normalized_history_text(value: str) -> str:
+    normalized = clean_text(value).lower()
+    normalized = re.sub(r"['’`]", "", normalized)
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return " ".join(normalized.split())
+
+
+def cma_series_history_key(artwork: Artwork) -> str | None:
+    if artwork.source != "cma":
+        return None
+
+    title = clean_text(artwork.title)
+    match = re.match(
+        r"^(?:text,\s*)?folio\s+\d+[a-z]?\s*(?:\([^)]*\))?\s*,?\s*from\s+(.+)$",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    series_title = normalized_history_text(match.group(1))
+    if not series_title:
+        return None
+
+    author = normalized_history_text(artwork.author)
+    digest = hashlib.sha1(f"cma|{author}|{series_title}".encode("utf-8")).hexdigest()[:16]
+    return f"series:{digest}"
+
+
+def artwork_history_keys(artwork: Artwork) -> list[str]:
+    keys = [str(artwork.object_id)]
+    series_key = cma_series_history_key(artwork)
+    if series_key:
+        keys.append(series_key)
+    return keys
+
+
+def was_artwork_seen_recently(
+    artwork: Artwork,
+    history: dict[str, dict[str, str]],
+    *,
+    now: datetime | None = None,
+    recent_days: int = RECENT_HISTORY_DAYS,
+) -> bool:
+    current_time = now or utc_now()
+    cutoff = current_time - timedelta(days=max(1, recent_days))
+    source_history = history.get(artwork.source, {})
+
+    for history_key in artwork_history_keys(artwork):
+        parsed_seen_at = parse_history_timestamp(source_history.get(history_key))
+        if parsed_seen_at is not None and parsed_seen_at >= cutoff:
+            return True
+    return False
+
+
+def remember_artwork(artwork: Artwork) -> None:
+    remember_artwork_with_settings(artwork, Settings())
+
+
+def remember_artwork_with_settings(artwork: Artwork, settings: Settings) -> None:
+    history = load_recent_history_with_retention(settings.history_retention_days)
+    source_history = history.setdefault(artwork.source, {})
+    seen_at = utc_now().isoformat()
+    for history_key in artwork_history_keys(artwork):
+        source_history[history_key] = seen_at
+    save_recent_history(history, retention_days=settings.history_retention_days)
 
 
 def fetch_met_object_ids() -> list[int]:
@@ -567,6 +737,234 @@ def choose_cma_artwork() -> Artwork:
     raise ArtwallError("No se encontro una obra valida en Cleveland Museum of Art.")
 
 
+def fetch_aic_page(page: int, limit: int) -> dict[str, Any]:
+    return request_json(
+        AIC_ARTWORKS_URL,
+        params={
+            "fields": "id,title,artist_display,date_display,image_id,is_public_domain,api_link",
+            "query[term][is_public_domain]": "true",
+            "page": page,
+            "limit": limit,
+        },
+    )
+
+
+def is_valid_aic_object(payload: dict[str, Any]) -> bool:
+    if not payload.get("is_public_domain"):
+        return False
+    if not clean_text(payload.get("image_id")):
+        return False
+
+    keywords = " ".join(
+        [
+            clean_text(payload.get("title")).lower(),
+            clean_text(payload.get("artist_display")).lower(),
+        ]
+    )
+    # Keep the filter broad enough for paintings while excluding obvious empty records.
+    return bool(keywords)
+
+
+def choose_aic_artwork() -> Artwork:
+    first_page = fetch_aic_page(page=1, limit=1)
+    pagination = first_page.get("pagination") or {}
+    total_pages = max(1, int(pagination.get("total_pages", 1)))
+    limit = 100
+    pages_checked = 0
+    total_candidates_seen = 0
+
+    pages = {1}
+    if total_pages > 1:
+        extra_count = min(5, total_pages - 1)
+        while len(pages) < extra_count + 1:
+            pages.add(random.randint(1, total_pages))
+
+    for page in random.sample(list(pages), len(pages)):
+        pages_checked += 1
+        payload = fetch_aic_page(page=page, limit=limit)
+        candidates: list[Artwork] = []
+
+        for item in payload.get("data") or []:
+            if not is_valid_aic_object(item):
+                continue
+
+            image_id = clean_text(item.get("image_id"))
+            if not image_id:
+                continue
+
+            candidates.append(
+                Artwork(
+                    source="aic",
+                    object_id=int(item["id"]),
+                    title=clean_text(item.get("title")) or "Sin titulo",
+                    author=clean_text(item.get("artist_display")) or "Autor desconocido",
+                    year=clean_text(item.get("date_display")) or "Fecha desconocida",
+                    image_url=f"https://www.artic.edu/iiif/2/{image_id}/full/1686,/0/default.jpg",
+                    page_url=clean_text(item.get("api_link")) or f"https://api.artic.edu/api/v1/artworks/{item['id']}",
+                )
+            )
+
+        total_candidates_seen += len(candidates)
+        if candidates:
+            log_selection_metrics(
+                "aic",
+                total_pages=total_pages,
+                pages_checked=pages_checked,
+                sampled_pages=len(pages),
+                page_candidates=len(candidates),
+                useful=total_candidates_seen,
+            )
+            return random.choice(candidates)
+
+    log_selection_metrics(
+        "aic",
+        total_pages=total_pages,
+        pages_checked=pages_checked,
+        sampled_pages=len(pages),
+        useful=total_candidates_seen,
+    )
+    raise ArtwallError("No se encontro una obra valida en Art Institute of Chicago.")
+
+
+def harvard_api_key(settings: Settings | None = None) -> str:
+    env_key = clean_text(os.environ.get("ARTWALL_HARVARD_API_KEY"))
+    if env_key:
+        return env_key
+    if settings is not None:
+        return clean_text(settings.harvard_api_key)
+    return clean_text(load_settings().harvard_api_key)
+
+
+def fetch_harvard_page(page: int, size: int, settings: Settings | None = None) -> dict[str, Any]:
+    api_key = harvard_api_key(settings)
+    if not api_key:
+        raise ArtwallError(
+            "Harvard Art Museums requiere API key. Define ARTWALL_HARVARD_API_KEY "
+            "o harvard_api_key en ~/.config/artwall/config.json."
+        )
+
+    return request_json(
+        HARVARD_OBJECTS_URL,
+        params={
+            "apikey": api_key,
+            "classification": "Paintings",
+            "hasimage": 1,
+            "size": size,
+            "page": page,
+            "fields": ",".join(
+                [
+                    "objectid",
+                    "title",
+                    "dated",
+                    "people",
+                    "culture",
+                    "primaryimageurl",
+                    "images",
+                    "url",
+                ]
+            ),
+        },
+    )
+
+
+def harvard_image_url(item: dict[str, Any]) -> str:
+    images = item.get("images") or []
+    if isinstance(images, list):
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            iiif_base = clean_text(image.get("iiifbaseuri"))
+            if iiif_base:
+                return f"{iiif_base.rstrip('/')}/full/full/0/default.jpg"
+
+    return clean_text(item.get("primaryimageurl"))
+
+
+def harvard_author(item: dict[str, Any]) -> str:
+    people = item.get("people") or []
+    if isinstance(people, list):
+        names: list[str] = []
+        for person in people:
+            if not isinstance(person, dict):
+                continue
+            name = clean_text(person.get("displayname")) or clean_text(person.get("alphasort"))
+            if name:
+                names.append(name)
+        if names:
+            return " · ".join(names)
+    return clean_text(item.get("culture")) or "Autor desconocido"
+
+
+def choose_harvard_artwork(settings: Settings | None = None) -> Artwork:
+    first_page = fetch_harvard_page(page=1, size=1, settings=settings)
+    info = first_page.get("info") or {}
+    total_pages = max(1, int(info.get("pages", 1)))
+    size = 100
+    pages_checked = 0
+    total_candidates_seen = 0
+
+    pages = {1}
+    if total_pages > 1:
+        extra_count = min(5, total_pages - 1)
+        while len(pages) < extra_count + 1:
+            pages.add(random.randint(1, total_pages))
+
+    for page in random.sample(list(pages), len(pages)):
+        pages_checked += 1
+        payload = fetch_harvard_page(page=page, size=size, settings=settings)
+        candidates: list[Artwork] = []
+
+        for item in payload.get("records") or []:
+            if not isinstance(item, dict):
+                continue
+
+            object_id = item.get("objectid")
+            image_url = harvard_image_url(item)
+            if not isinstance(object_id, int) or not image_url:
+                continue
+
+            candidates.append(
+                Artwork(
+                    source="harvard",
+                    object_id=object_id,
+                    title=clean_text(item.get("title")) or "Sin titulo",
+                    author=harvard_author(item),
+                    year=clean_text(item.get("dated")) or "Fecha desconocida",
+                    image_url=image_url,
+                    page_url=clean_text(item.get("url"))
+                    or f"https://harvardartmuseums.org/collections/object/{object_id}",
+                )
+            )
+
+        total_candidates_seen += len(candidates)
+        if candidates:
+            log_selection_metrics(
+                "harvard",
+                total_pages=total_pages,
+                pages_checked=pages_checked,
+                sampled_pages=len(pages),
+                page_candidates=len(candidates),
+                useful=total_candidates_seen,
+            )
+            return random.choice(candidates)
+
+    log_selection_metrics(
+        "harvard",
+        total_pages=total_pages,
+        pages_checked=pages_checked,
+        sampled_pages=len(pages),
+        useful=total_candidates_seen,
+    )
+    raise ArtwallError("No se encontro una obra valida en Harvard Art Museums.")
+
+
+def available_museums(settings: Settings | None = None) -> tuple[str, ...]:
+    sources = list(SUPPORTED_MUSEUMS)
+    if not harvard_api_key(settings):
+        sources = [source for source in sources if source != "harvard"]
+    return tuple(sources)
+
+
 def choose_rijks_artwork() -> Artwork:
     page_urls = fetch_rijks_page_urls()
     sample_page_urls = random.sample(page_urls, min(len(page_urls), 6))
@@ -699,11 +1097,15 @@ def extract_rijks_image_url(page_html: str) -> str | None:
     return None
 
 
-def choose_artwork_for_source(source: str) -> Artwork:
+def choose_artwork_for_source(source: str, settings: Settings | None = None) -> Artwork:
     if source == "met":
         return choose_met_artwork()
     if source == "cma":
         return choose_cma_artwork()
+    if source == "aic":
+        return choose_aic_artwork()
+    if source == "harvard":
+        return choose_harvard_artwork(settings)
     if source == "ngl":
         return choose_ngl_artwork()
     if source == "rijks":
@@ -711,9 +1113,11 @@ def choose_artwork_for_source(source: str) -> Artwork:
     raise ArtwallError(f"Fuente no soportada: {source}")
 
 
-def choose_artwork(source: str) -> Artwork:
+def choose_artwork(source: str, settings: Settings | None = None) -> Artwork:
     chosen_source = normalize_source(source)
-    recent_history = load_recent_history()
+    active_settings = settings or Settings()
+    recent_history = load_recent_history_with_retention(active_settings.history_retention_days)
+    current_time = utc_now()
     candidate: Artwork | None = None
     recent_discards = 0
     attempts = 0
@@ -721,15 +1125,21 @@ def choose_artwork(source: str) -> Artwork:
     if chosen_source == "random":
         for _ in range(RECENT_SELECTION_ATTEMPTS):
             attempts += 1
-            museum = random.choice(list(SUPPORTED_MUSEUMS))
-            candidate = choose_artwork_for_source(museum)
-            if candidate.object_id not in recent_history.get(candidate.source, []):
+            museum = random.choice(list(available_museums(active_settings)))
+            candidate = choose_artwork_for_source(museum, active_settings)
+            if not was_artwork_seen_recently(
+                candidate,
+                recent_history,
+                now=current_time,
+                recent_days=active_settings.avoid_repeat_days,
+            ):
                 log_selection_metrics(
                     candidate.source,
                     requested=chosen_source,
                     attempts=attempts,
                     recent_discards=recent_discards,
-                    recent_window=len(recent_history.get(candidate.source, [])),
+                    recent_days=active_settings.avoid_repeat_days,
+                    tracked=len(recent_history.get(candidate.source, {})),
                 )
                 return candidate
             recent_discards += 1
@@ -740,7 +1150,8 @@ def choose_artwork(source: str) -> Artwork:
                 requested=chosen_source,
                 attempts=attempts,
                 recent_discards=recent_discards,
-                recent_window=len(recent_history.get(candidate.source, [])),
+                recent_days=active_settings.avoid_repeat_days,
+                tracked=len(recent_history.get(candidate.source, {})),
                 forced_recent=1,
             )
             return candidate
@@ -748,14 +1159,20 @@ def choose_artwork(source: str) -> Artwork:
 
     for _ in range(RECENT_SELECTION_ATTEMPTS):
         attempts += 1
-        candidate = choose_artwork_for_source(chosen_source)
-        if candidate.object_id not in recent_history.get(candidate.source, []):
+        candidate = choose_artwork_for_source(chosen_source, active_settings)
+        if not was_artwork_seen_recently(
+            candidate,
+            recent_history,
+            now=current_time,
+            recent_days=active_settings.avoid_repeat_days,
+        ):
             log_selection_metrics(
                 candidate.source,
                 requested=chosen_source,
                 attempts=attempts,
                 recent_discards=recent_discards,
-                recent_window=len(recent_history.get(candidate.source, [])),
+                recent_days=active_settings.avoid_repeat_days,
+                tracked=len(recent_history.get(candidate.source, {})),
             )
             return candidate
         recent_discards += 1
@@ -766,7 +1183,8 @@ def choose_artwork(source: str) -> Artwork:
             requested=chosen_source,
             attempts=attempts,
             recent_discards=recent_discards,
-            recent_window=len(recent_history.get(candidate.source, [])),
+            recent_days=active_settings.avoid_repeat_days,
+            tracked=len(recent_history.get(candidate.source, {})),
             forced_recent=1,
         )
         return candidate
@@ -797,7 +1215,10 @@ def download_artwork_image(artwork: Artwork) -> Path:
     if target_path.exists():
         return target_path
 
-    response = requests.get(artwork.image_url, timeout=REQUEST_TIMEOUT, headers={"User-Agent": USER_AGENT})
+    headers = {"User-Agent": USER_AGENT}
+    if artwork.source == "aic" or "api.artic.edu" in artwork.image_url or "www.artic.edu" in artwork.image_url:
+        headers["AIC-User-Agent"] = AIC_USER_AGENT
+    response = requests.get(artwork.image_url, timeout=REQUEST_TIMEOUT, headers=headers)
     response.raise_for_status()
     target_path.write_bytes(response.content)
     return target_path
@@ -1023,6 +1444,49 @@ def prune_rendered_files(keep_last: int) -> None:
         path.unlink(missing_ok=True)
 
 
+def iter_cache_image_files() -> list[Path]:
+    return [
+        path
+        for path in CACHE_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() in CACHE_IMAGE_EXTENSIONS
+    ]
+
+
+def prune_cache_files(max_bytes: int) -> None:
+    removed = 0
+    freed_bytes = 0
+
+    cache_files: list[tuple[Path, os.stat_result]] = []
+    total_bytes = 0
+    for path in iter_cache_image_files():
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        cache_files.append((path, stat))
+        total_bytes += stat.st_size
+
+    target_bytes = max(1, max_bytes)
+    if total_bytes > target_bytes:
+        for path, stat in sorted(cache_files, key=lambda item: item[1].st_mtime):
+            if total_bytes <= target_bytes:
+                break
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            removed += 1
+            freed_bytes += stat.st_size
+            total_bytes -= stat.st_size
+
+    if removed:
+        log_message(
+            "[artwall] cache purge "
+            f"removed={removed} max_mib={target_bytes / (1024 * 1024):.1f} "
+            f"freed_mib={freed_bytes / (1024 * 1024):.1f}"
+        )
+
+
 def save_state(artwork: Artwork, rendered_path: Path, source_path: Path, size: tuple[int, int]) -> None:
     payload = {
         "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -1034,6 +1498,12 @@ def save_state(artwork: Artwork, rendered_path: Path, source_path: Path, size: t
     STATE_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def prepare_wallpaper(artwork: Artwork, width: int, height: int) -> tuple[Path, Path]:
+    source_path = download_artwork_image(artwork)
+    rendered_path = render_wallpaper(source_path, artwork, width, height)
+    return source_path, rendered_path
+
+
 def run_wallpaper_cycle(settings: Settings, *, width: int = 0, height: int = 0) -> tuple[Artwork, Path]:
     ensure_dirs()
 
@@ -1042,21 +1512,42 @@ def run_wallpaper_cycle(settings: Settings, *, width: int = 0, height: int = 0) 
     if target_width <= 0 or target_height <= 0:
         target_width, target_height = detect_screen_size()
 
-    artwork = choose_artwork(settings.source)
-    source_path = download_artwork_image(artwork)
-    rendered_path = render_wallpaper(source_path, artwork, target_width, target_height)
+    if normalize_source(settings.source) == "random":
+        last_error: Exception | None = None
+        for attempt in range(1, RANDOM_CYCLE_ATTEMPTS + 1):
+            artwork = choose_artwork(settings.source, settings)
+            try:
+                source_path, rendered_path = prepare_wallpaper(artwork, target_width, target_height)
+                break
+            except (requests.RequestException, OSError) as exc:
+                last_error = exc
+                log_message(
+                    "[artwall] Aviso: fallo preparando obra aleatoria "
+                    f"{artwork.source}:{artwork.object_id} en intento {attempt}/{RANDOM_CYCLE_ATTEMPTS}: {exc}"
+                )
+        else:
+            if last_error is not None:
+                raise ArtwallError(
+                    "No se pudo preparar ninguna obra valida en modo aleatorio."
+                ) from last_error
+            raise ArtwallError("No se pudo preparar ninguna obra valida en modo aleatorio.")
+    else:
+        artwork = choose_artwork(settings.source, settings)
+        source_path, rendered_path = prepare_wallpaper(artwork, target_width, target_height)
+
     apply_wallpaper_kde(rendered_path)
     prune_rendered_files(settings.keep_rendered)
+    prune_cache_files(settings.cache_max_mb * 1024 * 1024)
     save_state(artwork, rendered_path, source_path, (target_width, target_height))
-    remember_artwork(artwork)
+    remember_artwork_with_settings(artwork, settings)
     return artwork, rendered_path
 
 
 def command_once(args: argparse.Namespace) -> None:
     settings = load_settings()
     artwork, rendered_path = run_wallpaper_cycle(settings, width=args.width, height=args.height)
-    print(f"Wallpaper aplicado: {rendered_path}")
-    print(f"{MUSEUM_LABELS.get(artwork.source, artwork.source)} | {artwork.author} | {artwork.title} | {artwork.year}")
+    safe_print(f"Wallpaper aplicado: {rendered_path}")
+    safe_print(f"{MUSEUM_LABELS.get(artwork.source, artwork.source)} | {artwork.author} | {artwork.title} | {artwork.year}")
 
 
 def command_init(args: argparse.Namespace) -> None:
@@ -1071,6 +1562,10 @@ def command_init(args: argparse.Namespace) -> None:
         settings.screen_height = current.screen_height
         settings.keep_rendered = current.keep_rendered
         settings.paused = current.paused
+        settings.avoid_repeat_days = current.avoid_repeat_days
+        settings.history_retention_days = current.history_retention_days
+        settings.cache_max_mb = current.cache_max_mb
+        settings.harvard_api_key = current.harvard_api_key
     save_settings(settings)
     print(f"Configuracion creada en {CONFIG_PATH}")
 
@@ -1160,6 +1655,10 @@ def command_status() -> None:
     print(f"Renderizados: {RENDER_DIR}")
     print(f"Intervalo: {settings.interval_minutes} minuto(s)")
     print(f"Museo: {MUSEUM_LABELS.get(settings.source, settings.source)}")
+    print(f"No repetir: {settings.avoid_repeat_days} dia(s)")
+    print(f"Retencion historial: {settings.history_retention_days} dia(s)")
+    print(f"Tamano maximo cache: {settings.cache_max_mb} MB")
+    print(f"Clave Harvard: {'configurada' if harvard_api_key(settings) else 'no configurada'}")
     print(f"Pausado: {'si' if settings.paused else 'no'}")
     if STATE_PATH.exists():
         print(STATE_PATH.read_text(encoding="utf-8"))
@@ -1219,7 +1718,7 @@ class ArtwallTrayApp:
 
         menu.append(Gtk.SeparatorMenuItem())
 
-        for source_key in ("met", "cma", "ngl", "rijks", "random"):
+        for source_key in ("met", "cma", "aic", "harvard", "ngl", "rijks", "random"):
             item = Gtk.CheckMenuItem(label=MUSEUM_LABELS[source_key])
             item.connect("activate", self._on_set_source, source_key)
             menu.append(item)
@@ -1342,16 +1841,16 @@ class ArtwallTrayApp:
                 f"{artwork.author} | {artwork.title} | {rendered_path}"
             )
             log_message(message)
-            print(message)
+            safe_print(message)
         except (requests.RequestException, ArtwallError) as exc:
             message = f"[artwall] Error: {exc}"
             log_message(message)
-            print(message, file=sys.stderr)
+            safe_print(message, file=sys.stderr)
         except Exception as exc:
             message = f"[artwall] Error inesperado: {exc.__class__.__name__}: {exc}"
             log_message(message)
             log_message("[artwall] Traceback inesperado:\n" + traceback.format_exc().rstrip())
-            print(message, file=sys.stderr)
+            safe_print(message, file=sys.stderr)
 
 
 def command_tray() -> None:
