@@ -10,6 +10,7 @@ import random
 import re
 import subprocess
 import sys
+import threading
 import textwrap
 import time
 import traceback
@@ -51,6 +52,12 @@ FONT_PATHS = [
 
 REQUEST_TIMEOUT = 30
 IMAGE_PROBE_TIMEOUT = 5
+HARVARD_RANDOM_PAGE_SAMPLE = 3
+HARVARD_RANDOM_RECORDS_PER_PAGE = 25
+HARVARD_RANDOM_IMAGE_PROBE_LIMIT = 4
+HARVARD_RANDOM_TIMEOUT = 10
+HARVARD_RANDOM_REQUEST_TIMEOUT = 8
+HARVARD_RANDOM_IMAGE_PROBE_TIMEOUT = 2
 MET_SEARCH_URL = "https://collectionapi.metmuseum.org/public/collection/v1/search"
 MET_OBJECT_URL = "https://collectionapi.metmuseum.org/public/collection/v1/objects/{object_id}"
 CMA_ARTWORKS_URL = "https://openaccess-api.clevelandart.org/api/artworks"
@@ -262,14 +269,19 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def request_json(url: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
+def request_json(
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    timeout: int | float = REQUEST_TIMEOUT,
+) -> dict[str, Any]:
     headers = {"User-Agent": USER_AGENT}
     if "api.artic.edu" in url or "www.artic.edu" in url:
         headers["AIC-User-Agent"] = AIC_USER_AGENT
     response = requests.get(
         url,
         params=params,
-        timeout=REQUEST_TIMEOUT,
+        timeout=timeout,
         headers=headers,
     )
     response.raise_for_status()
@@ -836,7 +848,13 @@ def harvard_api_key(settings: Settings | None = None) -> str:
     return clean_text(load_settings().harvard_api_key)
 
 
-def fetch_harvard_page(page: int, size: int, settings: Settings | None = None) -> dict[str, Any]:
+def fetch_harvard_page(
+    page: int,
+    size: int,
+    settings: Settings | None = None,
+    *,
+    timeout: int | float = REQUEST_TIMEOUT,
+) -> dict[str, Any]:
     api_key = harvard_api_key(settings)
     if not api_key:
         raise ArtwallError(
@@ -865,6 +883,7 @@ def fetch_harvard_page(page: int, size: int, settings: Settings | None = None) -
                 ]
             ),
         },
+        timeout=timeout,
     )
 
 
@@ -896,11 +915,11 @@ def harvard_author(item: dict[str, Any]) -> str:
     return clean_text(item.get("culture")) or "Autor desconocido"
 
 
-def is_downloadable_image_url(image_url: str) -> bool:
+def is_downloadable_image_url(image_url: str, *, timeout: int | float = IMAGE_PROBE_TIMEOUT) -> bool:
     try:
         response = requests.get(
             image_url,
-            timeout=IMAGE_PROBE_TIMEOUT,
+            timeout=timeout,
             headers={"User-Agent": USER_AGENT, "Accept": "image/*,*/*;q=0.8"},
             stream=True,
         )
@@ -912,27 +931,40 @@ def is_downloadable_image_url(image_url: str) -> bool:
     return content_type.startswith("image/")
 
 
-def choose_harvard_artwork(settings: Settings | None = None) -> Artwork:
-    first_page = fetch_harvard_page(page=1, size=1, settings=settings)
+def choose_harvard_artwork(settings: Settings | None = None, *, fast_random: bool = False) -> Artwork:
+    request_timeout = HARVARD_RANDOM_REQUEST_TIMEOUT if fast_random else REQUEST_TIMEOUT
+    probe_timeout = HARVARD_RANDOM_IMAGE_PROBE_TIMEOUT if fast_random else IMAGE_PROBE_TIMEOUT
+    page_sample = HARVARD_RANDOM_PAGE_SAMPLE if fast_random else 13
+    size = HARVARD_RANDOM_RECORDS_PER_PAGE if fast_random else 100
+    probe_limit = HARVARD_RANDOM_IMAGE_PROBE_LIMIT if fast_random else 0
+    deadline = time.monotonic() + HARVARD_RANDOM_TIMEOUT if fast_random else None
+
+    first_page = fetch_harvard_page(page=1, size=1, settings=settings, timeout=request_timeout)
     info = first_page.get("info") or {}
     total_pages = max(1, int(info.get("pages", 1)))
-    size = 100
     pages_checked = 0
     total_candidates_seen = 0
 
     pages = {1}
     if total_pages > 1:
-        extra_count = min(12, total_pages - 1)
+        extra_count = min(page_sample - 1, total_pages - 1)
         while len(pages) < extra_count + 1:
             pages.add(random.randint(1, total_pages))
 
     rejected_images = 0
+    probes_checked = 0
     for page in random.sample(list(pages), len(pages)):
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         pages_checked += 1
-        payload = fetch_harvard_page(page=page, size=size, settings=settings)
+        payload = fetch_harvard_page(page=page, size=size, settings=settings, timeout=request_timeout)
         candidates: list[Artwork] = []
 
         for item in payload.get("records") or []:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            if probe_limit and probes_checked >= probe_limit:
+                break
             if not isinstance(item, dict):
                 continue
 
@@ -940,7 +972,8 @@ def choose_harvard_artwork(settings: Settings | None = None) -> Artwork:
             image_url = harvard_image_url(item)
             if not isinstance(object_id, int) or not image_url:
                 continue
-            if not is_downloadable_image_url(image_url):
+            probes_checked += 1
+            if not is_downloadable_image_url(image_url, timeout=probe_timeout):
                 rejected_images += 1
                 continue
 
@@ -966,9 +999,14 @@ def choose_harvard_artwork(settings: Settings | None = None) -> Artwork:
                 sampled_pages=len(pages),
                 page_candidates=len(candidates),
                 rejected_images=rejected_images,
+                probes_checked=probes_checked,
+                fast_random=fast_random,
                 useful=total_candidates_seen,
             )
             return random.choice(candidates)
+
+        if probe_limit and probes_checked >= probe_limit:
+            break
 
     log_selection_metrics(
         "harvard",
@@ -976,6 +1014,8 @@ def choose_harvard_artwork(settings: Settings | None = None) -> Artwork:
         pages_checked=pages_checked,
         sampled_pages=len(pages),
         rejected_images=rejected_images,
+        probes_checked=probes_checked,
+        fast_random=fast_random,
         useful=total_candidates_seen,
     )
     raise ArtwallError("No se encontro una obra valida y descargable en Harvard Art Museums.")
@@ -1120,7 +1160,12 @@ def extract_rijks_image_url(page_html: str) -> str | None:
     return None
 
 
-def choose_artwork_for_source(source: str, settings: Settings | None = None) -> Artwork:
+def choose_artwork_for_source(
+    source: str,
+    settings: Settings | None = None,
+    *,
+    fast_random: bool = False,
+) -> Artwork:
     if source == "met":
         return choose_met_artwork()
     if source == "cma":
@@ -1128,7 +1173,7 @@ def choose_artwork_for_source(source: str, settings: Settings | None = None) -> 
     if source == "aic":
         return choose_aic_artwork()
     if source == "harvard":
-        return choose_harvard_artwork(settings)
+        return choose_harvard_artwork(settings, fast_random=fast_random)
     if source == "ngl":
         return choose_ngl_artwork()
     if source == "rijks":
@@ -1149,7 +1194,14 @@ def choose_artwork(source: str, settings: Settings | None = None) -> Artwork:
         for _ in range(RECENT_SELECTION_ATTEMPTS):
             attempts += 1
             museum = random.choice(list(available_museums(active_settings)))
-            candidate = choose_artwork_for_source(museum, active_settings)
+            try:
+                candidate = choose_artwork_for_source(museum, active_settings, fast_random=True)
+            except (requests.RequestException, ArtwallError) as exc:
+                log_message(
+                    "[artwall] Aviso: fallo seleccionando obra aleatoria "
+                    f"source={museum} intento={attempts}/{RECENT_SELECTION_ATTEMPTS}: {exc}"
+                )
+                continue
             if not was_artwork_seen_recently(
                 candidate,
                 recent_history,
@@ -1700,6 +1752,8 @@ class ArtwallTrayApp:
         ensure_dirs()
         self.timer_id: int | None = None
         self.startup_timer_id: int | None = None
+        self.cycle_running = False
+        self.pending_manual_cycle = False
         self.interval_options = list(TRAY_INTERVAL_OPTIONS)
         self.interval_items: dict[int, Any] = {}
         self.source_items: dict[str, Any] = {}
@@ -1805,7 +1859,7 @@ class ArtwallTrayApp:
 
     def _on_change_now(self, _item: Any) -> None:
         log_message("[artwall] Cambio manual solicitado desde la bandeja.")
-        self._run_cycle()
+        self._run_cycle("manual")
 
     def _on_open_folder(self, _item: Any) -> None:
         subprocess.run(["xdg-open", str(RENDER_DIR)], check=False)
@@ -1839,26 +1893,44 @@ class ArtwallTrayApp:
         interval_seconds = max(60, self.settings.interval_minutes * 60)
         self.timer_id = GLib.timeout_add_seconds(interval_seconds, self._on_timer_tick)
         if run_now:
-            self._run_cycle()
+            self._run_cycle("scheduled")
 
     def _on_startup_tick(self) -> bool:
         self.startup_timer_id = None
         if self.settings.paused:
             return False
         log_message("[artwall] Ejecutando primer cambio tras el arranque.")
-        self._run_cycle()
+        self._run_cycle("startup")
         return False
 
     def _on_timer_tick(self) -> bool:
         if self.settings.paused:
             return True
         log_message("[artwall] Ejecutando cambio programado.")
-        self._run_cycle()
+        self._run_cycle("scheduled")
         return True
 
-    def _run_cycle(self) -> None:
+    def _run_cycle(self, reason: str) -> None:
+        if self.cycle_running:
+            if reason == "manual":
+                self.pending_manual_cycle = True
+                log_message("[artwall] Cambio en curso; se ejecutara otro cambio manual al terminar.")
+            else:
+                log_message("[artwall] Cambio omitido: ya hay un ciclo en curso.")
+            return
+
+        if reason == "manual" and self.timer_id is not None:
+            GLib.source_remove(self.timer_id)
+            self.timer_id = None
+
+        self.cycle_running = True
+        settings = Settings(**asdict(self.settings))
+        thread = threading.Thread(target=self._run_cycle_worker, args=(reason, settings), daemon=True)
+        thread.start()
+
+    def _run_cycle_worker(self, reason: str, settings: Settings) -> None:
         try:
-            artwork, rendered_path = run_wallpaper_cycle(self.settings)
+            artwork, rendered_path = run_wallpaper_cycle(settings)
             message = (
                 f"[artwall] {MUSEUM_LABELS.get(artwork.source, artwork.source)} | "
                 f"{artwork.author} | {artwork.title} | {rendered_path}"
@@ -1874,6 +1946,22 @@ class ArtwallTrayApp:
             log_message(message)
             log_message("[artwall] Traceback inesperado:\n" + traceback.format_exc().rstrip())
             safe_print(message, file=sys.stderr)
+        finally:
+            GLib.idle_add(self._on_cycle_finished, reason)
+
+    def _on_cycle_finished(self, reason: str) -> bool:
+        self.cycle_running = False
+
+        if self.pending_manual_cycle:
+            self.pending_manual_cycle = False
+            log_message("[artwall] Ejecutando cambio manual pendiente.")
+            self._run_cycle("manual")
+            return False
+
+        if reason == "manual":
+            self._schedule_timer(run_now=False)
+
+        return False
 
 
 def command_tray() -> None:
