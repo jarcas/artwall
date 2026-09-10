@@ -2,22 +2,42 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET_DIR="$HOME/.config/autostart"
-TARGET_FILE="$TARGET_DIR/artwall.desktop"
+AUTOSTART_DIR="$HOME/.config/autostart"
+APPLICATIONS_DIR="$HOME/.local/share/applications"
+AUTOSTART_FILE="$AUTOSTART_DIR/artwall.desktop"
+APPLICATION_FILE="$APPLICATIONS_DIR/artwall.desktop"
 
-mkdir -p "$TARGET_DIR"
+mkdir -p "$AUTOSTART_DIR" "$APPLICATIONS_DIR"
 
-cat > "$TARGET_FILE" <<EOF
+cat > "$AUTOSTART_FILE" <<EOF
 [Desktop Entry]
 Type=Application
 Version=1.0
 Name=artwall
 Comment=Cambia el wallpaper con obras de museo y muestra un icono en la bandeja
-Exec=python3 $SCRIPT_DIR/artwall.py tray
+Exec=$SCRIPT_DIR/run.sh tray
 Terminal=false
 X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
+EOF
+
+cat > "$APPLICATION_FILE" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=artwall
+Comment=Cambia el wallpaper con obras de museo y muestra un icono en la bandeja
+Exec=$SCRIPT_DIR/run.sh tray
+Icon=$SCRIPT_DIR/artwall-tray.svg
+Terminal=false
+StartupNotify=true
 Categories=Utility;
 EOF
 
-echo "Autostart instalado en: $TARGET_FILE"
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$APPLICATIONS_DIR"
+fi
+
+echo "Autostart instalado en: $AUTOSTART_FILE"
+echo "Lanzador del menu instalado en: $APPLICATION_FILE"
 echo "Se ejecutara al iniciar sesion con el modo bandeja."

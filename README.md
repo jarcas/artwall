@@ -71,6 +71,24 @@ This creates and enables:
 This creates:
 
 - `~/.config/autostart/artwall.desktop`
+- `~/.local/share/applications/artwall.desktop`
+
+The first entry starts artwall in tray mode when the KDE session starts; the
+second makes it available from the KDE application menu.
+
+## Troubleshooting autostart
+
+The tray entry is launched by KDE from `~/.config/autostart/artwall.desktop`.
+If it exits during startup, check the generated user-session unit and the
+application log:
+
+```bash
+systemctl --user status app-artwall@autostart.service --no-pager
+tail -80 ~/.local/share/artwall/artwall.log
+```
+
+On Debian or Ubuntu, tray startup requires the system package
+`gir1.2-ayatanaappindicator3-0.1` in addition to the Python dependencies.
 
 ## Paths
 

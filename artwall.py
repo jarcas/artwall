@@ -1987,10 +1987,14 @@ def main() -> int:
             raise ArtwallError(f"Comando no soportado: {args.command}")
         return 0
     except requests.RequestException as exc:
-        print(f"Error de red: {exc}", file=sys.stderr)
+        message = f"Error de red: {exc}"
+        print(message, file=sys.stderr)
+        log_message(f"[artwall] {message}")
         return 1
     except ArtwallError as exc:
-        print(str(exc), file=sys.stderr)
+        message = str(exc)
+        print(message, file=sys.stderr)
+        log_message(f"[artwall] Error: {message}")
         return 1
 
 
