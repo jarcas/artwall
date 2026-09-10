@@ -10,8 +10,7 @@
 - Comando para cambiar el fondo: `plasma-apply-wallpaperimage`
 - Programación: `systemd --user`
 
-La estructura del proyecto permite añadir más fuentes. La idea original de usar el Museo del Prado es viable, pero su web está protegida por Cloudflare y no es una buena base para una primera automatización robusta.
-
+La estructura del proyecto permite añadir más fuentes.
 ## Dependencies
 
 ```bash

@@ -10,7 +10,7 @@
 - Wallpaper change command: `plasma-apply-wallpaperimage`
 - Scheduling: `systemd --user`
 
-The project structure is ready to support additional sources. The original Museo del Prado idea is feasible, but its website is protected by Cloudflare and is not a good base for a first robust automation.
+The project structure is ready to support additional sources.
 
 ## Dependencies
 
