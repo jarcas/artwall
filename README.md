@@ -165,3 +165,7 @@ Harvard candidates are checked for image downloadability before they are accepte
 - On this machine, `cache_max_mb` is currently set to `500`.
 - This version uses only public-domain artworks with an available image.
 - The caption uses font sizes scaled to screen width; the museum line is shown slightly smaller than the artist and date line.
+
+## Language
+
+artwall supports English and Spanish. The tray menu includes **Language → Español / English**; the selected language is saved in `~/.config/artwall/config.json` and reused on future starts. For a first start without an existing configuration, artwall follows `LC_MESSAGES`, `LC_ALL`, or `LANG` when they begin with `en`; otherwise it uses Spanish.

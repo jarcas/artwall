@@ -165,3 +165,7 @@ Las obras de Harvard se comprueban antes de aceptarlas para verificar que sus im
 - En este equipo, `cache_max_mb` está establecido actualmente en `500`.
 - Esta versión solo usa obras de dominio público con una imagen disponible.
 - La leyenda usa tamaños de fuente escalados según el ancho de la pantalla; la línea del museo se muestra algo más pequeña que la del artista y la fecha.
+
+## Idioma
+
+artwall admite español e inglés. El menú de la bandeja incluye **Idioma → Español / English**; el idioma elegido se guarda en `~/.config/artwall/config.json` y se reutiliza en los siguientes arranques. En el primer arranque, si no existe configuración, artwall sigue `LC_MESSAGES`, `LC_ALL` o `LANG` cuando empiezan por `en`; en caso contrario usa español.

@@ -32,6 +32,80 @@ APP_NAME = "artwall"
 USER_AGENT = "artwall/0.2 (+personal KDE wallpaper rotator)"
 AIC_USER_AGENT = "artwall (local wallpaper app)"
 
+SUPPORTED_LANGUAGES = ("es", "en")
+CURRENT_LANGUAGE = "es"
+
+TRANSLATIONS = {
+    "en": {
+        "Aleatorio entre museos": "Random between museums",
+        "Wallpaper rotator de arte para KDE.": "KDE art wallpaper rotator.",
+        "Descarga una obra, la compone y la aplica.": "Downloads, composes, and applies an artwork.",
+        "Ancho objetivo opcional.": "Optional target width.",
+        "Alto objetivo opcional.": "Optional target height.",
+        "Crea la configuracion inicial.": "Creates the initial configuration.",
+        "Intervalo por defecto.": "Default interval.",
+        "Fuente inicial de imagenes.": "Initial image source.",
+        "Instala servicio y timer de usuario.": "Installs the user service and timer.",
+        "Minutos entre cambios.": "Minutes between changes.",
+        "Muestra la obra actual y rutas principales.": "Shows the current artwork and main paths.",
+        "Inicia la aplicacion residente en la bandeja del sistema.": "Starts the system tray application.",
+        "No se pudo leer la configuracion": "Could not read the configuration",
+        "No se encontro plasma-apply-wallpaperimage.": "plasma-apply-wallpaperimage was not found.",
+        "No se pudo aplicar el wallpaper en KDE.": "Could not apply the wallpaper in KDE.",
+        "No se pudo elegir una obra aleatoria valida.": "Could not choose a valid random artwork.",
+        "No se pudo preparar ninguna obra valida en modo aleatorio.": "Could not prepare a valid artwork in random mode.",
+        "Configuracion creada en": "Configuration created at",
+        "Wallpaper aplicado:": "Wallpaper applied:",
+        "Aviso: no se pudo sincronizar el timer de systemd.": "Warning: could not synchronize the systemd timer.",
+        "Instalado:": "Installed:",
+        "Config:": "Config:",
+        "Renderizados:": "Rendered:",
+        "Intervalo:": "Interval:",
+        "Museo:": "Museum:",
+        "No repetir:": "Avoid repeats:",
+        "Retencion historial:": "History retention:",
+        "Tamano maximo cache:": "Maximum cache size:",
+        "Clave Harvard:": "Harvard key:",
+        "configurada": "configured",
+        "no configurada": "not configured",
+        "Pausado:": "Paused:",
+        "si": "yes",
+        "no": "no",
+        "Aun no hay una obra aplicada.": "No artwork has been applied yet.",
+        "Faltan dependencias de bandeja.": "Tray dependencies are missing.",
+        "Cada {minutes} minuto(s)": "Every {minutes} minute(s)",
+        "Idioma": "Language",
+        "Español": "Spanish",
+        "English": "English",
+        "Pausar": "Pause",
+        "Cambiar ahora": "Change now",
+        "Abrir carpeta renderizada": "Open rendered folder",
+        "Salir": "Quit",
+    }
+}
+
+def normalize_language(language: Any) -> str:
+    return "en" if str(language or "").strip().lower().startswith("en") else "es"
+
+
+def system_language() -> str:
+    for variable in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        value = os.environ.get(variable, "")
+        if value:
+            return normalize_language(value)
+    return "es"
+
+
+def set_language(language: Any) -> str:
+    global CURRENT_LANGUAGE
+    CURRENT_LANGUAGE = normalize_language(language)
+    return CURRENT_LANGUAGE
+
+
+def _(text: str) -> str:
+    return TRANSLATIONS.get(CURRENT_LANGUAGE, {}).get(text, text)
+
+
 CONFIG_DIR = Path.home() / ".config" / APP_ID
 DATA_DIR = Path.home() / ".local" / "share" / APP_ID
 CACHE_DIR = DATA_DIR / "cache"
@@ -102,6 +176,7 @@ class Settings:
     history_retention_days: int = HISTORY_RETENTION_DAYS
     cache_max_mb: int = CACHE_MAX_BYTES // (1024 * 1024)
     harvard_api_key: str = ""
+    language: str = "es"
 
 
 @dataclass
@@ -205,7 +280,8 @@ def normalize_source(source: str) -> str:
 
 def load_settings() -> Settings:
     if not CONFIG_PATH.exists():
-        settings = Settings()
+        settings = Settings(language=system_language())
+        set_language(settings.language)
         save_settings(settings)
         return settings
 
@@ -215,6 +291,7 @@ def load_settings() -> Settings:
         raise ArtwallError(f"No se pudo leer la configuracion: {exc}") from exc
 
     settings = Settings(
+        language=normalize_language(data.get("language", "es")),
         interval_minutes=max(1, int(data.get("interval_minutes", 2))),
         source=normalize_source(data.get("source", "random")),
         screen_width=max(0, int(data.get("screen_width", 0))),
@@ -231,8 +308,10 @@ def load_settings() -> Settings:
         or "history_retention_days" not in data
         or "cache_max_mb" not in data
         or "harvard_api_key" not in data
+        or "language" not in data
     ):
         save_settings(settings)
+    set_language(settings.language)
     return settings
 
 
@@ -241,27 +320,34 @@ def save_settings(settings: Settings) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog=APP_NAME, description="Wallpaper rotator de arte para KDE.")
+    if CONFIG_PATH.exists():
+        try:
+            set_language(json.loads(CONFIG_PATH.read_text(encoding="utf-8")).get("language", system_language()))
+        except (OSError, json.JSONDecodeError):
+            set_language(system_language())
+    else:
+        set_language(system_language())
+    parser = argparse.ArgumentParser(prog=APP_NAME, description=_("Wallpaper rotator de arte para KDE."))
     subparsers = parser.add_subparsers(dest="command", required=False)
 
-    once_parser = subparsers.add_parser("once", help="Descarga una obra, la compone y la aplica.")
-    once_parser.add_argument("--width", type=int, default=0, help="Ancho objetivo opcional.")
-    once_parser.add_argument("--height", type=int, default=0, help="Alto objetivo opcional.")
+    once_parser = subparsers.add_parser("once", help=_("Descarga una obra, la compone y la aplica."))
+    once_parser.add_argument("--width", type=int, default=0, help=_("Ancho objetivo opcional."))
+    once_parser.add_argument("--height", type=int, default=0, help=_("Alto objetivo opcional."))
 
-    init_parser = subparsers.add_parser("init", help="Crea la configuracion inicial.")
-    init_parser.add_argument("--minutes", type=int, default=2, help="Intervalo por defecto.")
+    init_parser = subparsers.add_parser("init", help=_("Crea la configuracion inicial."))
+    init_parser.add_argument("--minutes", type=int, default=2, help=_("Intervalo por defecto."))
     init_parser.add_argument(
         "--source",
         choices=tuple(MUSEUM_LABELS.keys()),
         default="random",
-        help="Fuente inicial de imagenes.",
+        help=_("Fuente inicial de imagenes."),
     )
 
-    install_parser = subparsers.add_parser("install-systemd", help="Instala servicio y timer de usuario.")
-    install_parser.add_argument("--minutes", type=int, default=2, help="Minutos entre cambios.")
+    install_parser = subparsers.add_parser("install-systemd", help=_("Instala servicio y timer de usuario."))
+    install_parser.add_argument("--minutes", type=int, default=2, help=_("Minutos entre cambios."))
 
-    subparsers.add_parser("status", help="Muestra la obra actual y rutas principales.")
-    subparsers.add_parser("tray", help="Inicia la aplicacion residente en la bandeja del sistema.")
+    subparsers.add_parser("status", help=_("Muestra la obra actual y rutas principales."))
+    subparsers.add_parser("tray", help=_("Inicia la aplicacion residente en la bandeja del sistema."))
 
     args = parser.parse_args()
     if args.command is None:
@@ -1621,13 +1707,14 @@ def run_wallpaper_cycle(settings: Settings, *, width: int = 0, height: int = 0) 
 def command_once(args: argparse.Namespace) -> None:
     settings = load_settings()
     artwork, rendered_path = run_wallpaper_cycle(settings, width=args.width, height=args.height)
-    safe_print(f"Wallpaper aplicado: {rendered_path}")
+    safe_print(f"{_("Wallpaper aplicado:")} {rendered_path}")
     safe_print(f"{MUSEUM_LABELS.get(artwork.source, artwork.source)} | {artwork.author} | {artwork.title} | {artwork.year}")
 
 
 def command_init(args: argparse.Namespace) -> None:
     ensure_dirs()
     settings = Settings(
+        language=system_language(),
         interval_minutes=max(1, args.minutes),
         source=normalize_source(args.source),
     )
@@ -1641,8 +1728,9 @@ def command_init(args: argparse.Namespace) -> None:
         settings.history_retention_days = current.history_retention_days
         settings.cache_max_mb = current.cache_max_mb
         settings.harvard_api_key = current.harvard_api_key
+        settings.language = current.language
     save_settings(settings)
-    print(f"Configuracion creada en {CONFIG_PATH}")
+    print(f"{_("Configuracion creada en")} {CONFIG_PATH}")
 
 
 def build_systemd_units(minutes: int) -> tuple[str, str]:
@@ -1726,19 +1814,19 @@ def command_install_systemd(args: argparse.Namespace) -> None:
 def command_status() -> None:
     ensure_dirs()
     settings = load_settings()
-    print(f"Config: {CONFIG_PATH}")
-    print(f"Renderizados: {RENDER_DIR}")
-    print(f"Intervalo: {settings.interval_minutes} minuto(s)")
-    print(f"Museo: {MUSEUM_LABELS.get(settings.source, settings.source)}")
-    print(f"No repetir: {settings.avoid_repeat_days} dia(s)")
-    print(f"Retencion historial: {settings.history_retention_days} dia(s)")
-    print(f"Tamano maximo cache: {settings.cache_max_mb} MB")
-    print(f"Clave Harvard: {'configurada' if harvard_api_key(settings) else 'no configurada'}")
-    print(f"Pausado: {'si' if settings.paused else 'no'}")
+    print(f"{_("Config:")} {CONFIG_PATH}")
+    print(f"{_("Renderizados:")} {RENDER_DIR}")
+    print(f"{_("Intervalo:")} {settings.interval_minutes} minuto(s)")
+    print(f"{_("Museo:")} {_(MUSEUM_LABELS.get(settings.source, settings.source))}")
+    print(f"{_("No repetir:")} {settings.avoid_repeat_days} dia(s)")
+    print(f"{_("Retencion historial:")} {settings.history_retention_days} dia(s)")
+    print(f"{_("Tamano maximo cache:")} {settings.cache_max_mb} MB")
+    print(f"{_("Clave Harvard:")} {_("configurada") if harvard_api_key(settings) else _("no configurada")}")
+    print(f"{_("Pausado:")} {_("si") if settings.paused else _("no")}")
     if STATE_PATH.exists():
         print(STATE_PATH.read_text(encoding="utf-8"))
     else:
-        print("Aun no hay una obra aplicada.")
+        print(_("Aun no hay una obra aplicada."))
 
 
 class ArtwallTrayApp:
@@ -1757,6 +1845,7 @@ class ArtwallTrayApp:
         self.interval_options = list(TRAY_INTERVAL_OPTIONS)
         self.interval_items: dict[int, Any] = {}
         self.source_items: dict[str, Any] = {}
+        self.language_items: dict[str, Any] = {}
         self.settings = load_settings()
 
         if self.settings.interval_minutes not in self.interval_options:
@@ -1779,6 +1868,9 @@ class ArtwallTrayApp:
         log_message("[artwall] Tray iniciado.")
 
     def _build_menu(self) -> Any:
+        self.interval_items = {}
+        self.source_items = {}
+        self.language_items = {}
         menu = Gtk.Menu()
 
         title_item = Gtk.MenuItem(label="artwall")
@@ -1788,7 +1880,7 @@ class ArtwallTrayApp:
         menu.append(Gtk.SeparatorMenuItem())
 
         for minutes in self.interval_options:
-            item = Gtk.CheckMenuItem(label=f"Cada {minutes} minuto(s)")
+            item = Gtk.CheckMenuItem(label=_("Cada {minutes} minuto(s)").format(minutes=minutes))
             item.connect("activate", self._on_set_interval, minutes)
             menu.append(item)
             self.interval_items[minutes] = item
@@ -1796,34 +1888,47 @@ class ArtwallTrayApp:
         menu.append(Gtk.SeparatorMenuItem())
 
         for source_key in ("met", "cma", "aic", "harvard", "ngl", "rijks", "random"):
-            item = Gtk.CheckMenuItem(label=MUSEUM_LABELS[source_key])
+            item = Gtk.CheckMenuItem(label=_(MUSEUM_LABELS[source_key]))
             item.connect("activate", self._on_set_source, source_key)
             menu.append(item)
             self.source_items[source_key] = item
 
         menu.append(Gtk.SeparatorMenuItem())
 
-        self.pause_item = Gtk.CheckMenuItem(label="Pausar")
+        language_item = Gtk.MenuItem(label=_("Idioma"))
+        language_menu = Gtk.Menu()
+        for language_key, language_label in (("es", "Español"), ("en", "English")):
+            item = Gtk.CheckMenuItem(label=_(language_label))
+            item.connect("activate", self._on_set_language, language_key)
+            language_menu.append(item)
+            self.language_items[language_key] = item
+        language_item.set_submenu(language_menu)
+        menu.append(language_item)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        self.pause_item = Gtk.CheckMenuItem(label=_("Pausar"))
         self.pause_item.set_active(self.settings.paused)
         self.pause_item.connect("toggled", self._on_toggle_pause)
         menu.append(self.pause_item)
 
-        now_item = Gtk.MenuItem(label="Cambiar ahora")
+        now_item = Gtk.MenuItem(label=_("Cambiar ahora"))
         now_item.connect("activate", self._on_change_now)
         menu.append(now_item)
 
-        open_item = Gtk.MenuItem(label="Abrir carpeta renderizada")
+        open_item = Gtk.MenuItem(label=_("Abrir carpeta renderizada"))
         open_item.connect("activate", self._on_open_folder)
         menu.append(open_item)
 
         menu.append(Gtk.SeparatorMenuItem())
 
-        quit_item = Gtk.MenuItem(label="Salir")
+        quit_item = Gtk.MenuItem(label=_("Salir"))
         quit_item.connect("activate", self._on_quit)
         menu.append(quit_item)
 
         self._refresh_interval_checks()
         self._refresh_source_checks()
+        self._refresh_language_checks()
         menu.show_all()
         return menu
 
@@ -1835,6 +1940,10 @@ class ArtwallTrayApp:
         normalized = normalize_source(self.settings.source)
         for source_key, item in self.source_items.items():
             item.set_active(source_key == normalized)
+
+    def _refresh_language_checks(self) -> None:
+        for language_key, item in self.language_items.items():
+            item.set_active(language_key == self.settings.language)
 
     def _on_set_interval(self, item: Any, minutes: int) -> None:
         if not item.get_active():
@@ -1851,6 +1960,14 @@ class ArtwallTrayApp:
         self.settings.source = source_key
         save_settings(self.settings)
         self._refresh_source_checks()
+
+    def _on_set_language(self, item: Any, language: str) -> None:
+        if not item.get_active() or language == self.settings.language:
+            return
+        self.settings.language = set_language(language)
+        save_settings(self.settings)
+        self.menu = self._build_menu()
+        self.indicator.set_menu(self.menu)
 
     def _on_toggle_pause(self, item: Any) -> None:
         self.settings.paused = item.get_active()
