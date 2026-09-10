@@ -1,5 +1,7 @@
 # artwall
 
+[English](README.md) · [Español](README.es.md)
+
 `artwall` rotates the KDE wallpaper using museum artworks and overlays a discreet caption in the lower-left corner with title, artist, date, and museum.
 
 ## Current Status
