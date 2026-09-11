@@ -150,6 +150,8 @@ Las obras de Harvard se comprueban antes de aceptarlas para verificar que sus im
 ./run.sh once --width 1920 --height 1080
 ```
 
+- Cuando hay monitores externos, artwall renderiza para el externo habilitado de mayor resolución. Así evita que KDE recorte la leyenda inferior al aplicar un fondo 16:10 en una pantalla 16:9.
+
 - Fuentes compatibles:
   - `met`: The Metropolitan Museum of Art
   - `cma`: Cleveland Museum of Art

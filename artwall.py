@@ -1385,38 +1385,71 @@ def download_artwork_image(artwork: Artwork) -> Path:
     return target_path
 
 
+def is_internal_output(name: str) -> bool:
+    """Return whether a connector name normally belongs to a laptop panel."""
+    return bool(re.search(r"(?:^|[-_])(edp|lvds|dsi)(?:[-_]|$)", name, re.IGNORECASE))
+
+
+def preferred_screen_size(outputs: list[tuple[str, int, int]]) -> tuple[int, int] | None:
+    """Prefer the largest external display, then the largest enabled display."""
+    valid = [(name, width, height) for name, width, height in outputs if width >= 800 and height >= 600]
+    if not valid:
+        return None
+    external = [output for output in valid if not is_internal_output(output[0])]
+    chosen = max(external or valid, key=lambda output: output[1] * output[2])
+    return (chosen[1], chosen[2])
+
+
+def parse_xrandr_screen_size(output: str) -> tuple[int, int] | None:
+    outputs: list[tuple[str, int, int]] = []
+    geometry_pattern = re.compile(r"(\d+)x(\d+)\+\d+\+\d+")
+    for line in output.splitlines():
+        if " connected" not in line:
+            continue
+        match = geometry_pattern.search(line)
+        if match:
+            outputs.append((line.split()[0], int(match.group(1)), int(match.group(2))))
+    return preferred_screen_size(outputs)
+
+
+def parse_kscreen_screen_size(output: str) -> tuple[int, int] | None:
+    outputs: list[tuple[str, int, int]] = []
+    blocks = re.split(r"(?=^Output:\s+\d+\s+)", output, flags=re.MULTILINE)
+    resolution_pattern = re.compile(r"(\d+)x(\d+)(?:@|\s|$)")
+    for block in blocks:
+        header = re.match(r"Output:\s+\d+\s+(\S+)\s+enabled\b", block)
+        if not header:
+            continue
+        active_lines = [line for line in block.splitlines() if "*" in line]
+        candidates = active_lines or block.splitlines()
+        for line in candidates:
+            match = resolution_pattern.search(line)
+            if match:
+                outputs.append((header.group(1), int(match.group(1)), int(match.group(2))))
+                break
+    return preferred_screen_size(outputs)
+
+
 def detect_screen_size() -> tuple[int, int]:
     commands = [
-        ["kscreen-doctor", "-o"],
-        ["xrandr", "--current"],
+        (["kscreen-doctor", "-o"], parse_kscreen_screen_size),
+        (["xrandr", "--current"], parse_xrandr_screen_size),
     ]
-    for command in commands:
+    for command, parser in commands:
         try:
             output = subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL)
         except (FileNotFoundError, subprocess.CalledProcessError):
             continue
-        size = parse_screen_size(output)
+        size = parser(output)
         if size:
             return size
     return (1920, 1080)
 
 
 def parse_screen_size(output: str) -> tuple[int, int] | None:
-    for line in output.splitlines():
-        for token in line.split():
-            if "+" in token or "@" in token:
-                candidate = token.split("@", 1)[0].split("+", 1)[0]
-            else:
-                candidate = token
-            if "x" not in candidate:
-                continue
-            parts = candidate.lower().split("x", 1)
-            if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
-                continue
-            width, height = int(parts[0]), int(parts[1])
-            if width >= 800 and height >= 600:
-                return (width, height)
-    return None
+    """Backward-compatible generic resolution parser for diagnostic use."""
+    matches = re.findall(r"\b(\d+)x(\d+)(?:@|\+|\s|$)", output)
+    return preferred_screen_size([("display", int(width), int(height)) for width, height in matches])
 
 
 def get_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:

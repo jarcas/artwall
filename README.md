@@ -151,6 +151,8 @@ Harvard candidates are checked for image downloadability before they are accepte
 ./run.sh once --width 1920 --height 1080
 ```
 
+- When external monitors are connected, artwall renders for the enabled external display with the highest resolution. This prevents KDE from cropping the lower caption when it applies a 16:10 wallpaper to a 16:9 display.
+
 - Supported sources:
   - `met`: The Metropolitan Museum of Art
   - `cma`: Cleveland Museum of Art
