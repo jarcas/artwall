@@ -32,7 +32,7 @@ APP_NAME = "artwall"
 USER_AGENT = "artwall/0.2 (+personal KDE wallpaper rotator)"
 AIC_USER_AGENT = "artwall (local wallpaper app)"
 
-SUPPORTED_LANGUAGES = ("es", "en")
+SUPPORTED_LANGUAGES = ("es", "en", "de")
 CURRENT_LANGUAGE = "es"
 
 TRANSLATIONS = {
@@ -73,7 +73,7 @@ TRANSLATIONS = {
         "no": "no",
         "Aun no hay una obra aplicada.": "No artwork has been applied yet.",
         "Faltan dependencias de bandeja.": "Tray dependencies are missing.",
-        "Cada {minutes} minuto(s)": "Every {minutes} minute(s)",
+        "Cada {minutes} minutos": "Every {minutes} minutes",
         "Idioma": "Language",
         "Español": "Spanish",
         "English": "English",
@@ -81,11 +81,63 @@ TRANSLATIONS = {
         "Cambiar ahora": "Change now",
         "Abrir carpeta renderizada": "Open rendered folder",
         "Salir": "Quit",
+    },
+    "de": {
+        "Aleatorio entre museos": "Zufällig zwischen Museen",
+        "Wallpaper rotator de arte para KDE.": "KDE-Hintergrundwechsler für Kunst.",
+        "Descarga una obra, la compone y la aplica.": "Lädt ein Kunstwerk herunter, erstellt das Hintergrundbild und wendet es an.",
+        "Ancho objetivo opcional.": "Optionale Zielbreite.",
+        "Alto objetivo opcional.": "Optionale Zielhöhe.",
+        "Crea la configuracion inicial.": "Erstellt die Erstkonfiguration.",
+        "Intervalo por defecto.": "Standardintervall.",
+        "Fuente inicial de imagenes.": "Anfängliche Bildquelle.",
+        "Instala servicio y timer de usuario.": "Installiert den Benutzerdienst und Timer.",
+        "Minutos entre cambios.": "Minuten zwischen den Wechseln.",
+        "Muestra la obra actual y rutas principales.": "Zeigt das aktuelle Kunstwerk und die wichtigsten Pfade.",
+        "Inicia la aplicacion residente en la bandeja del sistema.": "Startet die Anwendung im Infobereich.",
+        "No se pudo leer la configuracion": "Die Konfiguration konnte nicht gelesen werden",
+        "No se encontro plasma-apply-wallpaperimage.": "plasma-apply-wallpaperimage wurde nicht gefunden.",
+        "No se pudo aplicar el wallpaper en KDE.": "Das Hintergrundbild konnte nicht in KDE angewendet werden.",
+        "No se pudo elegir una obra aleatoria valida.": "Es konnte kein gültiges zufälliges Kunstwerk ausgewählt werden.",
+        "No se pudo preparar ninguna obra valida en modo aleatorio.": "Im Zufallsmodus konnte kein gültiges Kunstwerk vorbereitet werden.",
+        "Configuracion creada en": "Konfiguration erstellt in",
+        "Wallpaper aplicado:": "Hintergrundbild angewendet:",
+        "Aviso: no se pudo sincronizar el timer de systemd.": "Warnung: Der systemd-Timer konnte nicht synchronisiert werden.",
+        "Instalado:": "Installiert:",
+        "Config:": "Konfiguration:",
+        "Renderizados:": "Gerenderte Bilder:",
+        "Intervalo:": "Intervall:",
+        "Museo:": "Museum:",
+        "No repetir:": "Wiederholungen vermeiden:",
+        "Retencion historial:": "Aufbewahrung des Verlaufs:",
+        "Tamano maximo cache:": "Maximale Cachegröße:",
+        "Clave Harvard:": "Harvard-Schlüssel:",
+        "configurada": "konfiguriert",
+        "no configurada": "nicht konfiguriert",
+        "Pausado:": "Pausiert:",
+        "si": "ja",
+        "no": "nein",
+        "Aun no hay una obra aplicada.": "Es wurde noch kein Kunstwerk angewendet.",
+        "Faltan dependencias de bandeja.": "Abhängigkeiten für den Infobereich fehlen.",
+        "Cada {minutes} minutos": "Alle {minutes} Minuten",
+        "Idioma": "Sprache",
+        "Español": "Spanisch",
+        "English": "Englisch",
+        "Deutsch": "Deutsch",
+        "Pausar": "Pausieren",
+        "Cambiar ahora": "Jetzt wechseln",
+        "Abrir carpeta renderizada": "Gerenderten Ordner öffnen",
+        "Salir": "Beenden",
     }
 }
 
 def normalize_language(language: Any) -> str:
-    return "en" if str(language or "").strip().lower().startswith("en") else "es"
+    normalized = str(language or "").strip().lower()
+    if normalized.startswith("en"):
+        return "en"
+    if normalized.startswith("de"):
+        return "de"
+    return "es"
 
 
 def system_language() -> str:
@@ -1913,7 +1965,7 @@ class ArtwallTrayApp:
         menu.append(Gtk.SeparatorMenuItem())
 
         for minutes in self.interval_options:
-            item = Gtk.CheckMenuItem(label=_("Cada {minutes} minuto(s)").format(minutes=minutes))
+            item = Gtk.CheckMenuItem(label=_("Cada {minutes} minutos").format(minutes=minutes))
             item.connect("activate", self._on_set_interval, minutes)
             menu.append(item)
             self.interval_items[minutes] = item
@@ -1930,7 +1982,7 @@ class ArtwallTrayApp:
 
         language_item = Gtk.MenuItem(label=_("Idioma"))
         language_menu = Gtk.Menu()
-        for language_key, language_label in (("es", "Español"), ("en", "English")):
+        for language_key, language_label in (("es", "Español"), ("en", "English"), ("de", "Deutsch")):
             item = Gtk.CheckMenuItem(label=_(language_label))
             item.connect("activate", self._on_set_language, language_key)
             language_menu.append(item)

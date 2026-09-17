@@ -28,3 +28,10 @@ Y validar con salidas simuladas de KScreen y xrandr que una pantalla externa
 1920x1080 se elige frente a un panel interno 1536x960. Para aplicar un fondo
 inmediatamente, ejecutar `./run.sh once`; necesita acceso a la sesión de KDE y
 red para descargar una obra si no está disponible en caché.
+
+## Idiomas
+
+Artwall admite español, inglés y alemán. La preferencia se guarda como `language`
+en la configuración y `normalize_language()` debe reconocer los prefijos `en` y
+`de`; los demás valores usan español. Al añadir textos de interfaz, incluir sus
+equivalentes en las tres entradas de `TRANSLATIONS`.

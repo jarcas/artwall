@@ -1,18 +1,17 @@
 # artwall
 
-[English](README.md) · [Español](README.es.md)
+[Español](README.md) · [English](README.en.md) · [Deutsch](README.de.md)
 
-`artwall` rotates the KDE wallpaper using museum artworks and overlays a discreet caption in the lower-left corner with title, artist, date, and museum.
+`artwall` cambia el fondo de KDE usando obras de museos y muestra una leyenda discreta en la esquina inferior izquierda con el título, el artista, la fecha y el museo.
 
-## Current Status
+## Estado actual
 
-- Target environment: KDE Plasma on Linux
-- Wallpaper change command: `plasma-apply-wallpaperimage`
-- Scheduling: `systemd --user`
+- Entorno objetivo: KDE Plasma en Linux
+- Comando para cambiar el fondo: `plasma-apply-wallpaperimage`
+- Programación: `systemd --user`
 
-The project structure is ready to support additional sources.
-
-## Dependencies
+La estructura del proyecto permite añadir más fuentes.
+## Dependencias
 
 ```bash
 sudo apt install -y \
@@ -20,93 +19,93 @@ sudo apt install -y \
   python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1
 ```
 
-## Tray Mode
+## Modo bandeja
 
 ```bash
 ./run.sh tray
 ```
 
-If you run `./run.sh` without arguments, it also starts in tray mode.
+Si ejecutas `./run.sh` sin argumentos, también se inicia el modo bandeja.
 
-From the tray icon you can:
+Desde el icono de la bandeja puedes:
 
-- change the rotation interval
-- choose `The Met`
-- choose `Cleveland Museum of Art`
-- choose `Art Institute of Chicago`
-- choose `Harvard Art Museums`
-- choose `National Gallery London`
-- choose `Rijksmuseum`
-- choose `Random between museums`
-- pause or force an immediate change
+- cambiar el intervalo de rotación
+- elegir `The Met`
+- elegir `Cleveland Museum of Art`
+- elegir `Art Institute of Chicago`
+- elegir `Harvard Art Museums`
+- elegir `National Gallery London`
+- elegir `Rijksmuseum`
+- elegir `Aleatorio entre museos`
+- pausar o forzar un cambio inmediato
 
-Available tray intervals:
+Intervalos disponibles en la bandeja:
 
-- `2` minutes
-- `5` minutes
-- `10` minutes
+- `2` minutos
+- `5` minutos
+- `10` minutos
 
-## Manual Command-Line Usage
+## Uso manual desde la línea de comandos
 
 ```bash
 ./run.sh init --minutes 2 --source random
 ./run.sh once
 ```
 
-## Install the Timer
+## Instalar el temporizador
 
 ```bash
 ./install_systemd.sh 2
 ```
 
-This creates and enables:
+Esto crea y activa:
 
 - `~/.config/systemd/user/artwall.service`
 - `~/.config/systemd/user/artwall.timer`
 
-## Autostart with Tray
+## Inicio automático con bandeja
 
 ```bash
 ./install_autostart.sh
 ```
 
-This creates:
+Esto crea:
 
 - `~/.config/autostart/artwall.desktop`
 - `~/.local/share/applications/artwall.desktop`
 
-The first entry starts artwall in tray mode when the KDE session starts; the
-second makes it available from the KDE application menu.
+La primera entrada inicia artwall en modo bandeja al comenzar la sesión de KDE; la
+segunda lo hace disponible en el menú de aplicaciones de KDE.
 
-## Troubleshooting autostart
+## Resolución de problemas del inicio automático
 
-The tray entry is launched by KDE from `~/.config/autostart/artwall.desktop`.
-If it exits during startup, check the generated user-session unit and the
-application log:
+La entrada de bandeja es iniciada por KDE desde `~/.config/autostart/artwall.desktop`.
+Si se cierra durante el arranque, consulta la unidad generada de la sesión y el
+registro de la aplicación:
 
 ```bash
 systemctl --user status app-artwall@autostart.service --no-pager
 tail -80 ~/.local/share/artwall/artwall.log
 ```
 
-On Debian or Ubuntu, tray startup requires the system package
-`gir1.2-ayatanaappindicator3-0.1` in addition to the Python dependencies.
+En Debian o Ubuntu, el inicio de la bandeja requiere el paquete del sistema
+`gir1.2-ayatanaappindicator3-0.1` además de las dependencias de Python.
 
-## Paths
+## Rutas
 
-- Configuration: `~/.config/artwall/config.json`
-- Image cache: `~/.local/share/artwall/cache`
-- Rendered wallpapers: `~/.local/share/artwall/rendered`
-- Maximum rendered wallpapers kept: `10`
-- Current state: `~/.local/share/artwall/current.json`
-- Recent artwork history: `~/.local/share/artwall/recent-artworks.json`
-- Log: `~/.local/share/artwall/artwall.log`
+- Configuración: `~/.config/artwall/config.json`
+- Caché de imágenes: `~/.local/share/artwall/cache`
+- Fondos renderizados: `~/.local/share/artwall/rendered`
+- Máximo de fondos renderizados conservados: `10`
+- Estado actual: `~/.local/share/artwall/current.json`
+- Historial reciente de obras: `~/.local/share/artwall/recent-artworks.json`
+- Registro: `~/.local/share/artwall/artwall.log`
 
-## Configuration
+## Configuración
 
-The configuration file is stored at `~/.config/artwall/config.json`.
+El archivo de configuración se guarda en `~/.config/artwall/config.json`.
 
-Current supported keys:
+Claves disponibles:
 
 - `interval_minutes`
 - `source`
@@ -116,8 +115,9 @@ Current supported keys:
 - `history_retention_days`
 - `cache_max_mb`
 - `harvard_api_key`
+- `language`
 
-Default values for a new configuration:
+Valores predeterminados para una configuración nueva:
 
 ```json
 {
@@ -128,46 +128,47 @@ Default values for a new configuration:
   "avoid_repeat_days": 7,
   "history_retention_days": 60,
   "cache_max_mb": 500,
-  "harvard_api_key": ""
+  "harvard_api_key": "",
+  "language": "es"
 }
 ```
 
-`avoid_repeat_days` defines how long artwall tries not to repeat the same artwork from the same museum.
+`avoid_repeat_days` define durante cuánto tiempo artwall intenta no repetir la misma obra del mismo museo.
 
-`history_retention_days` defines how long seen-artwork entries are kept before they are purged automatically.
+`history_retention_days` define cuánto tiempo se conservan las obras vistas antes de eliminarlas automáticamente.
 
-`cache_max_mb` defines the maximum image cache size. If the image cache exceeds this limit, artwall deletes the oldest cached images until it is under the limit.
+`cache_max_mb` define el tamaño máximo de la caché de imágenes. Si se supera este límite, artwall elimina las imágenes más antiguas hasta quedar por debajo.
 
-`harvard_api_key` enables the optional Harvard Art Museums source. You can also set `ARTWALL_HARVARD_API_KEY` in the environment instead of storing the key in the config file.
-Harvard candidates are checked for image downloadability before they are accepted, so network-specific `403` responses are skipped instead of being returned as usable artworks.
+`harvard_api_key` activa opcionalmente la fuente Harvard Art Museums. También puedes establecer `ARTWALL_HARVARD_API_KEY` en el entorno en lugar de guardar la clave en el archivo de configuración.
+Las obras de Harvard se comprueban antes de aceptarlas para verificar que sus imágenes se pueden descargar; las respuestas `403` se descartan.
 
-`recent-artworks.json` stores the seen-artwork history by museum using the format `object_id -> ISO 8601 UTC timestamp`.
+`recent-artworks.json` guarda el historial de obras vistas por museo con el formato `object_id -> marca de tiempo UTC ISO 8601`.
 
-## Notes
+## Notas
 
-- If your main display is not detected correctly, you can test manually with:
+- Si no se detecta correctamente la pantalla principal, puedes probar manualmente con:
 
 ```bash
 ./run.sh once --width 1920 --height 1080
 ```
 
-- When external monitors are connected, artwall renders for the enabled external display with the highest resolution. This prevents KDE from cropping the lower caption when it applies a 16:10 wallpaper to a 16:9 display.
+- Cuando hay monitores externos, artwall renderiza para el externo habilitado de mayor resolución. Así evita que KDE recorte la leyenda inferior al aplicar un fondo 16:10 en una pantalla 16:9.
 
-- Supported sources:
+- Fuentes compatibles:
   - `met`: The Metropolitan Museum of Art
   - `cma`: Cleveland Museum of Art
   - `aic`: Art Institute of Chicago
   - `harvard`: Harvard Art Museums
   - `ngl`: National Gallery London
   - `rijks`: Rijksmuseum
-  - `random`: chooses randomly between supported museums
-- The default option for a new configuration is `random`.
-- Existing configurations are migrated automatically when new config keys are introduced.
-- On this machine, `avoid_repeat_days` is currently set to `30`.
-- On this machine, `cache_max_mb` is currently set to `500`.
-- This version uses only public-domain artworks with an available image.
-- The caption uses font sizes scaled to screen width; the museum line is shown slightly smaller than the artist and date line.
+  - `random`: elige aleatoriamente entre los museos compatibles
+- La opción predeterminada para una configuración nueva es `random`.
+- Las configuraciones existentes se migran automáticamente al introducir nuevas claves.
+- En este equipo, `avoid_repeat_days` está establecido actualmente en `30`.
+- En este equipo, `cache_max_mb` está establecido actualmente en `500`.
+- Esta versión solo usa obras de dominio público con una imagen disponible.
+- La leyenda usa tamaños de fuente escalados según el ancho de la pantalla; la línea del museo se muestra algo más pequeña que la del artista y la fecha.
 
-## Language
+## Idioma
 
-artwall supports English and Spanish. The tray menu includes **Language → Español / English**; the selected language is saved in `~/.config/artwall/config.json` and reused on future starts. For a first start without an existing configuration, artwall follows `LC_MESSAGES`, `LC_ALL`, or `LANG` when they begin with `en`; otherwise it uses Spanish.
+artwall admite español, inglés y alemán. El menú de la bandeja incluye **Idioma → Español / English / Deutsch**; el idioma elegido se guarda en `~/.config/artwall/config.json` y se reutiliza en los siguientes arranques. En el primer arranque, si no existe configuración, artwall sigue `LC_MESSAGES`, `LC_ALL` o `LANG` cuando empiezan por `en` o `de`; en caso contrario usa español.
