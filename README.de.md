@@ -159,6 +159,7 @@ Standardwerte für eine neue Konfiguration:
   - `rijks`: Rijksmuseum
   - `random`: wählt zufällig zwischen den unterstützten Museen
 - Die Standardoption für eine neue Konfiguration ist `random`.
+- Die Suche ist auf 15 Sekunden pro Museum begrenzt; im Zufallsmodus werden bei Fehlern andere Quellen versucht. Ein Infobereich-Zyklus endet spätestens nach 110 Sekunden.
 - Bestehende Konfigurationen werden beim Hinzufügen neuer Schlüssel automatisch migriert.
 - Auf diesem Rechner ist `avoid_repeat_days` derzeit auf `30` gesetzt.
 - Auf diesem Rechner ist `cache_max_mb` derzeit auf `500` gesetzt.

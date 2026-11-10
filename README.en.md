@@ -164,6 +164,7 @@ Harvard candidates are checked for image downloadability before they are accepte
   - `rijks`: Rijksmuseum
   - `random`: chooses randomly between supported museums
 - The default option for a new configuration is `random`.
+- Searches are limited to 15 seconds per museum; random mode tries other sources when one fails. A tray cycle stops after at most 110 seconds.
 - Existing configurations are migrated automatically when new config keys are introduced.
 - On this machine, `avoid_repeat_days` is currently set to `30`.
 - On this machine, `cache_max_mb` is currently set to `500`.

@@ -8,6 +8,7 @@ import json
 import os
 import random
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -177,6 +178,8 @@ FONT_PATHS = [
 ]
 
 REQUEST_TIMEOUT = 30
+SOURCE_SELECTION_TIMEOUT = 15
+CYCLE_TIMEOUT = 110
 IMAGE_PROBE_TIMEOUT = 5
 HARVARD_RANDOM_PAGE_SAMPLE = 3
 HARVARD_RANDOM_RECORDS_PER_PAGE = 25
@@ -184,7 +187,7 @@ HARVARD_RANDOM_IMAGE_PROBE_LIMIT = 4
 HARVARD_RANDOM_TIMEOUT = 10
 HARVARD_RANDOM_REQUEST_TIMEOUT = 8
 HARVARD_RANDOM_IMAGE_PROBE_TIMEOUT = 2
-MET_SEARCH_URL = "https://collectionapi.metmuseum.org/public/collection/v1/search"
+MET_SEARCH_URL = "https://collectionapi.metmuseum.org/public/collection/v1.1/search"
 MET_OBJECT_URL = "https://collectionapi.metmuseum.org/public/collection/v1/objects/{object_id}"
 CMA_ARTWORKS_URL = "https://openaccess-api.clevelandart.org/api/artworks"
 AIC_ARTWORKS_URL = "https://api.artic.edu/api/v1/artworks"
@@ -665,23 +668,18 @@ def remember_artwork_with_settings(artwork: Artwork, settings: Settings) -> None
 
 
 def fetch_met_object_ids() -> list[int]:
-    cached = load_cached_met_ids()
-    if cached:
-        return cached
-
-    payload = request_json(
-        MET_SEARCH_URL,
-        params={
-            "hasImages": "true",
-            "q": "painting",
-        },
-    )
+    params: dict[str, Any] = {"hasImages": "true", "q": "painting", "limit": 500}
+    first_page = request_json(MET_SEARCH_URL, params=params)
+    total = int(first_page.get("total") or 0)
+    if total > 500:
+        params["offset"] = random.randrange((total + 499) // 500) * 500
+        payload = request_json(MET_SEARCH_URL, params=params)
+    else:
+        payload = first_page
     object_ids = payload.get("objectIDs") or []
-    if not object_ids:
+    filtered = [object_id for object_id in object_ids if isinstance(object_id, int)]
+    if not filtered:
         raise ArtwallError("The Met no ha devuelto obras con imagen.")
-
-    filtered = [int(object_id) for object_id in object_ids if isinstance(object_id, int)]
-    save_cached_met_ids(filtered)
     return filtered
 
 
@@ -1319,6 +1317,33 @@ def choose_artwork_for_source(
     raise ArtwallError(f"Fuente no soportada: {source}")
 
 
+def choose_artwork_with_timeout(source: str, settings: Settings, *, fast_random: bool = False) -> Artwork:
+    # A separate process also bounds DNS resolution and servers that slowly stream data.
+    script = (
+        "import json, sys, artwall; "
+        "data=json.load(sys.stdin); "
+        "artwork=artwall.choose_artwork_for_source(data['source'], "
+        "artwall.Settings(**data['settings']), fast_random=data['fast_random']); "
+        "print(json.dumps(artwall.asdict(artwork)))"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            input=json.dumps({"source": source, "settings": asdict(settings), "fast_random": fast_random}),
+            text=True, capture_output=True, timeout=SOURCE_SELECTION_TIMEOUT,
+            cwd=str(Path(__file__).resolve().parent),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ArtwallError(f"Tiempo agotado buscando en {source} ({SOURCE_SELECTION_TIMEOUT}s).") from exc
+    if result.returncode:
+        detail = result.stderr.strip().splitlines()
+        raise ArtwallError(detail[-1] if detail else f"Fallo buscando en {source}.")
+    try:
+        return Artwork(**json.loads(result.stdout))
+    except (ValueError, TypeError) as exc:
+        raise ArtwallError(f"Respuesta invalida al buscar en {source}.") from exc
+
+
 def choose_artwork(source: str, settings: Settings | None = None) -> Artwork:
     chosen_source = normalize_source(source)
     active_settings = settings or Settings()
@@ -1329,15 +1354,16 @@ def choose_artwork(source: str, settings: Settings | None = None) -> Artwork:
     attempts = 0
 
     if chosen_source == "random":
-        for _ in range(RECENT_SELECTION_ATTEMPTS):
+        museums = list(available_museums(active_settings))
+        random.shuffle(museums)
+        for museum in museums:
             attempts += 1
-            museum = random.choice(list(available_museums(active_settings)))
             try:
-                candidate = choose_artwork_for_source(museum, active_settings, fast_random=True)
+                candidate = choose_artwork_with_timeout(museum, active_settings, fast_random=True)
             except (requests.RequestException, ArtwallError) as exc:
                 log_message(
                     "[artwall] Aviso: fallo seleccionando obra aleatoria "
-                    f"source={museum} intento={attempts}/{RECENT_SELECTION_ATTEMPTS}: {exc}"
+                    f"source={museum} intento={attempts}/{len(museums)}: {exc}"
                 )
                 continue
             if not was_artwork_seen_recently(
@@ -1372,7 +1398,7 @@ def choose_artwork(source: str, settings: Settings | None = None) -> Artwork:
 
     for _ in range(RECENT_SELECTION_ATTEMPTS):
         attempts += 1
-        candidate = choose_artwork_for_source(chosen_source, active_settings)
+        candidate = choose_artwork_with_timeout(chosen_source, active_settings)
         if not was_artwork_seen_recently(
             candidate,
             recent_history,
@@ -2132,13 +2158,28 @@ class ArtwallTrayApp:
 
     def _run_cycle_worker(self, reason: str, settings: Settings) -> None:
         try:
-            artwork, rendered_path = run_wallpaper_cycle(settings)
-            message = (
-                f"[artwall] {MUSEUM_LABELS.get(artwork.source, artwork.source)} | "
-                f"{artwork.author} | {artwork.title} | {rendered_path}"
+            script = (
+                "import json, sys, artwall; "
+                "settings=artwall.Settings(**json.load(sys.stdin)); "
+                "artwall.run_wallpaper_cycle(settings)"
             )
-            log_message(message)
-            safe_print(message)
+            process = subprocess.Popen(
+                [sys.executable, "-c", script], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                cwd=str(Path(__file__).resolve().parent), start_new_session=True,
+            )
+            try:
+                stdout, stderr = process.communicate(json.dumps(asdict(settings)), timeout=CYCLE_TIMEOUT)
+            except subprocess.TimeoutExpired as exc:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+                raise ArtwallError(f"Tiempo agotado en el ciclo ({CYCLE_TIMEOUT}s).") from exc
+            if process.returncode:
+                detail = stderr.strip().splitlines()
+                raise ArtwallError(detail[-1] if detail else "Fallo el ciclo de fondo.")
+            if stdout.strip():
+                safe_print(stdout.strip())
+            log_message("[artwall] Cambio de fondo completado.")
         except (requests.RequestException, ArtwallError) as exc:
             message = f"[artwall] Error: {exc}"
             log_message(message)

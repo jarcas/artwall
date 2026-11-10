@@ -163,6 +163,7 @@ Las obras de Harvard se comprueban antes de aceptarlas para verificar que sus im
   - `rijks`: Rijksmuseum
   - `random`: elige aleatoriamente entre los museos compatibles
 - La opción predeterminada para una configuración nueva es `random`.
+- La búsqueda dispone de un límite de 15 segundos por museo; en modo aleatorio se prueban otras fuentes si una falla. El ciclo de bandeja termina tras 110 segundos como máximo.
 - Las configuraciones existentes se migran automáticamente al introducir nuevas claves.
 - En este equipo, `avoid_repeat_days` está establecido actualmente en `30`.
 - En este equipo, `cache_max_mb` está establecido actualmente en `500`.
